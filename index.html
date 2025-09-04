@@ -49,6 +49,19 @@
             font-size: 24px;
             font-weight: bold;
         }
+        
+        .demo-mode {
+            color: #ff0;
+            font-size: 20px;
+            font-weight: bold;
+            animation: blink 1s infinite;
+        }
+        
+        @keyframes blink {
+            0% { opacity: 1; }
+            50% { opacity: 0.3; }
+            100% { opacity: 1; }
+        }
     </style>
 </head>
 <body>
@@ -68,6 +81,9 @@
         <div id="gameOverText" class="game-over" style="display: none;">
             GAME OVER - Rキーでリスタート
         </div>
+        <div id="demoText" class="demo-mode" style="display: none;">
+            🎮 DEMO MODE - 何かキーを押してプレイ開始 🎮
+        </div>
     </div>
 
     <script>
@@ -79,7 +95,11 @@
             score: 0,
             lives: 3,
             gameOver: false,
-            level: 1
+            level: 1,
+            isDemo: false,
+            lastUserInput: Date.now(),
+            demoMoveTimer: 0,
+            demoTarget: { x: 380, y: 50 }
         };
         
         // 効果音システム
@@ -327,6 +347,15 @@
             ctx.fillStyle = '#000';
             ctx.fillRect(drawX - offsetX + 15 * scale, drawY - offsetY + 25 * scale, 10 * scale, 3 * scale);
             
+            // デモモード中は光る輪郭を追加
+            if (gameState.isDemo) {
+                ctx.strokeStyle = '#ff0';
+                ctx.lineWidth = 2;
+                ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 200) * 0.3;
+                ctx.strokeRect(drawX - offsetX - 2, drawY - offsetY - 2, scaledWidth + 4, scaledHeight + 4);
+                ctx.globalAlpha = 1;
+            }
+            
             // ジャンプ中は足を描画
             if (frog.isJumping) {
                 ctx.fillStyle = '#0a0';
@@ -339,9 +368,186 @@
             }
         }
         
+        // デモプレイのAI制御
+        function updateDemoAI() {
+            gameState.demoMoveTimer++;
+            
+            // 45フレームごとに行動を決定（約0.75秒）
+            if (gameState.demoMoveTimer < 45 || frog.isJumping) return;
+            
+            gameState.demoMoveTimer = 0;
+            
+            const moveDistance = 50;
+            
+            // 現在の位置に基づいてシンプルな判断
+            // 基本戦略：前進を優先し、危険があれば回避
+            
+            // ゴールエリアに到達していない場合は前進を試みる
+            if (frog.y > GOAL_Y) {
+                // 道路エリアにいる場合
+                if (frog.y >= ROAD_START && frog.y <= ROAD_END) {
+                    // 車をチェック
+                    let canMoveUp = true;
+                    const nextY = frog.y - moveDistance;
+                    
+                    cars.forEach(car => {
+                        // 次の位置で車と衝突するかチェック
+                        if (Math.abs(car.y - nextY) < 40) {
+                            const futureCarX = car.x + car.speed * 10; // 少し先の車の位置を予測
+                            if (Math.abs(futureCarX - frog.x) < 80) {
+                                canMoveUp = false;
+                            }
+                        }
+                    });
+                    
+                    if (canMoveUp) {
+                        simulateKeyPress('ArrowUp');
+                    } else {
+                        // 左右に避ける
+                        const dodgeDirection = Math.random() > 0.5 ? 'ArrowLeft' : 'ArrowRight';
+                        if (dodgeDirection === 'ArrowLeft' && frog.x > 50) {
+                            simulateKeyPress('ArrowLeft');
+                        } else if (dodgeDirection === 'ArrowRight' && frog.x < canvas.width - frog.width - 50) {
+                            simulateKeyPress('ArrowRight');
+                        }
+                    }
+                }
+                // 水エリアにいる場合
+                else if (frog.y >= WATER_START && frog.y <= WATER_END) {
+                    // 現在丸太に乗っているかチェック
+                    let currentLog = null;
+                    logs.forEach(log => {
+                        if (frog.x + frog.width > log.x && frog.x < log.x + log.width &&
+                            frog.y + frog.height > log.y && frog.y < log.y + log.height) {
+                            currentLog = log;
+                        }
+                    });
+                    
+                    if (currentLog) {
+                        // 丸太の端に近づいたら中央へ移動
+                        const logCenter = currentLog.x + currentLog.width / 2;
+                        const frogCenter = frog.x + frog.width / 2;
+                        
+                        if (frogCenter < logCenter - 20 && frog.x < canvas.width - frog.width - 50) {
+                            simulateKeyPress('ArrowRight');
+                        } else if (frogCenter > logCenter + 20 && frog.x > 50) {
+                            simulateKeyPress('ArrowLeft');
+                        } else {
+                            // 次の丸太へジャンプするタイミングを探る
+                            let canJump = false;
+                            const nextY = frog.y - moveDistance;
+                            
+                            logs.forEach(log => {
+                                if (Math.abs(log.y - nextY) < 30) {
+                                    const futureLogX = log.x + log.speed * 15;
+                                    if (Math.abs(futureLogX + log.width/2 - frogCenter) < 60) {
+                                        canJump = true;
+                                    }
+                                }
+                            });
+                            
+                            if (canJump || nextY < WATER_START) {
+                                simulateKeyPress('ArrowUp');
+                            }
+                        }
+                    } else {
+                        // 丸太に乗っていない場合は緊急回避
+                        simulateKeyPress('ArrowDown');
+                    }
+                }
+                // 安全地帯にいる場合
+                else {
+                    // 単純に前進
+                    simulateKeyPress('ArrowUp');
+                }
+            }
+        }
+        
+        // キー入力をシミュレート
+        function simulateKeyPress(key) {
+            if (frog.isJumping) return;
+            
+            const moveDistance = 50;
+            let newX = frog.x;
+            let newY = frog.y;
+            
+            switch(key) {
+                case 'ArrowUp':
+                    if (frog.y > 0) newY = frog.y - moveDistance;
+                    break;
+                case 'ArrowDown':
+                    if (frog.y < canvas.height - frog.height) newY = frog.y + moveDistance;
+                    break;
+                case 'ArrowLeft':
+                    if (frog.x > 0) newX = frog.x - moveDistance;
+                    break;
+                case 'ArrowRight':
+                    if (frog.x < canvas.width - frog.width) newX = frog.x + moveDistance;
+                    break;
+            }
+            
+            if (newX !== frog.x || newY !== frog.y) {
+                playJumpSound();
+                frog.jumpStartX = frog.x;
+                frog.jumpStartY = frog.y;
+                frog.jumpEndX = newX;
+                frog.jumpEndY = newY;
+                frog.isJumping = true;
+                frog.jumpProgress = 0;
+            }
+        }
+        
+        // デモモードのチェック
+        function checkDemoMode() {
+            if (gameState.gameOver) return;
+            
+            // 5秒間操作がなければデモモード開始
+            if (!gameState.isDemo && Date.now() - gameState.lastUserInput > 5000) {
+                startDemo();
+            }
+        }
+        
+        // デモモード開始
+        function startDemo() {
+            gameState.isDemo = true;
+            gameState.demoMoveTimer = 0;
+            restart(); // ゲームをリセット
+            document.getElementById('demoText').style.display = 'block';
+        }
+        
+        // デモモード終了
+        function stopDemo() {
+            if (gameState.isDemo) {
+                gameState.isDemo = false;
+                document.getElementById('demoText').style.display = 'none';
+                restart(); // ゲームをリセット
+            }
+        }
+        
         // 更新関数
         function update() {
-            if (gameState.gameOver) return;
+            if (gameState.gameOver && !gameState.isDemo) return;
+            
+            // デモモードのチェック
+            checkDemoMode();
+            
+            // デモモード中はAIが操作
+            if (gameState.isDemo) {
+                updateDemoAI();
+                
+                // デモモード中にゲームオーバーしたら自動リスタート
+                if (gameState.gameOver) {
+                    setTimeout(() => {
+                        gameState.score = 0;
+                        gameState.lives = 3;
+                        gameState.gameOver = false;
+                        gameState.isDemo = true; // デモモードを維持
+                        resetFrog();
+                        createObstacles();
+                        document.getElementById('gameOverText').style.display = 'none';
+                    }, 2000);
+                }
+            }
             
             // カエルのジャンプアニメーション更新
             if (frog.isJumping) {
@@ -463,6 +669,11 @@
             resetFrog();
             createObstacles();
             document.getElementById('gameOverText').style.display = 'none';
+            
+            // デモモードでない場合は入力時間を更新
+            if (!gameState.isDemo) {
+                gameState.lastUserInput = Date.now();
+            }
         }
         
         // キーボード入力
@@ -470,6 +681,15 @@
         
         document.addEventListener('keydown', (e) => {
             keys[e.key] = true;
+            
+            // ユーザー入力を記録
+            gameState.lastUserInput = Date.now();
+            
+            // デモモード中の場合は終了
+            if (gameState.isDemo) {
+                stopDemo();
+                return;
+            }
             
             if (gameState.gameOver && e.key.toLowerCase() === 'r') {
                 restart();
